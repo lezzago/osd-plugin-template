@@ -1,0 +1,157 @@
+name: Cypress E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e-standalone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install root dependencies
+        run: yarn install
+
+      # The plugin's tsconfig.json extends ../../tsconfig.json (the OSD monorepo root)
+      # which doesn't exist in CI. This stub satisfies the extends chain.
+      - name: Create parent tsconfig stub
+        run: |
+          mkdir -p ../../
+          echo '{"compilerOptions":{"target":"ES2020","module":"commonjs","moduleResolution":"node","esModuleInterop":true,"skipLibCheck":true,"jsx":"react"}}' > ../../tsconfig.json
+
+      - name: Install standalone dependencies
+        working-directory: standalone
+        run: yarn install
+
+      - name: Build standalone
+        working-directory: standalone
+        run: yarn build
+
+      - name: Start standalone server (MOCK_MODE)
+        run: MOCK_MODE=true node standalone/dist/standalone/server.js &
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 30000
+
+      - name: Run Cypress tests
+        run: npx cypress run --browser chrome
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots-standalone
+          path: cypress/screenshots/
+          retention-days: 7
+
+  e2e-osd-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.17.0
+        ports:
+          - 9200:9200
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: 'true'
+          OPENSEARCH_INITIAL_ADMIN_PASSWORD: 'ignored'
+        options: >-
+          --health-cmd "curl -f http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: yarn install
+
+      # Build the OSD plugin zip
+      - name: Build plugin zip
+        run: yarn build:plugin
+
+      - name: Verify plugin zip exists
+        run: test -f build/myPlugin.zip && echo "Plugin zip OK ($(du -h build/myPlugin.zip | cut -f1))"
+
+      # Start OSD with the plugin installed
+      - name: Start OSD with plugin
+        run: |
+          docker run -d --name osd \
+            --network ${{ job.services.opensearch.network }} \
+            -p 5601:5601 \
+            -e 'OPENSEARCH_HOSTS=["http://opensearch:9200"]' \
+            -e 'DISABLE_SECURITY_DASHBOARDS_PLUGIN=true' \
+            -v ${{ github.workspace }}/build/myPlugin.zip:/tmp/myPlugin.zip \
+            opensearchproject/opensearch-dashboards:2.17.0
+
+          # Install the plugin inside the running container
+          docker exec osd /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install file:///tmp/myPlugin.zip
+
+          # Restart OSD to load the newly installed plugin
+          docker restart osd
+
+      - name: Wait for OSD to be ready
+        run: |
+          echo "Waiting for OSD to start (this can take 60-90s with plugins)..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:5601/api/status > /dev/null 2>&1; then
+              echo "OSD is ready after ~${i}0 seconds"
+              break
+            fi
+            if [ "$i" = "60" ]; then
+              echo "OSD failed to start within 600s"
+              docker logs osd | tail -50
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Seed test data via plugin API
+        run: |
+          # Create sample notes via the plugin's API
+          curl -sf -X POST http://localhost:5601/api/my_plugin/notes \
+            -H 'Content-Type: application/json' \
+            -H 'osd-xsrf: true' \
+            -d '{"title":"CI Test Note","content":"Created by E2E pipeline"}' || true
+
+          curl -sf -X POST http://localhost:5601/api/my_plugin/notes \
+            -H 'Content-Type: application/json' \
+            -H 'osd-xsrf: true' \
+            -d '{"title":"Second CI Note","content":"Also created by E2E pipeline"}' || true
+
+      - name: Run Cypress tests (OSD mode)
+        env:
+          CYPRESS_MODE: osd
+        run: npx cypress run --browser chrome
+
+      - name: Print OSD logs on failure
+        if: failure()
+        run: docker logs osd 2>&1 | tail -100
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots-osd
+          path: cypress/screenshots/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f osd 2>/dev/null || true

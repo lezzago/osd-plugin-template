@@ -1,0 +1,16 @@
+name: Backport
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+jobs:
+  backport:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Backport
+        uses: VachaShah/backport@v2.2.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch_name: backport/${{ github.event.pull_request.number }}

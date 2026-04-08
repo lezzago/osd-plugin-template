@@ -1,0 +1,60 @@
+name: Verify Plugin Installation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Build plugin zip
+        run: yarn build:plugin
+
+      - name: Verify zip structure
+        run: |
+          echo "=== Verifying plugin zip structure ==="
+          unzip -l build/myPlugin.zip
+
+          # Check required files exist in the zip
+          unzip -l build/myPlugin.zip | grep -q "opensearch_dashboards.json" || (echo "FAIL: missing opensearch_dashboards.json" && exit 1)
+          unzip -l build/myPlugin.zip | grep -q "package.json" || (echo "FAIL: missing package.json" && exit 1)
+          unzip -l build/myPlugin.zip | grep -q "myPlugin.plugin.js" || (echo "FAIL: missing client bundle" && exit 1)
+
+          echo "=== Zip structure OK ==="
+
+      - name: Verify installation into OSD container
+        run: |
+          # Start a fresh OSD container
+          docker run -d --name osd-verify \
+            -e 'DISABLE_SECURITY_DASHBOARDS_PLUGIN=true' \
+            opensearchproject/opensearch-dashboards:2.17.0
+
+          # Wait for container to be ready
+          sleep 5
+
+          # Copy and install the plugin
+          docker cp build/myPlugin.zip osd-verify:/tmp/myPlugin.zip
+          docker exec osd-verify /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin install file:///tmp/myPlugin.zip
+
+          # Verify the plugin is listed
+          docker exec osd-verify /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin list | grep -q "myPlugin" || (echo "FAIL: plugin not listed after install" && exit 1)
+
+          echo "=== Plugin installation verified ==="
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f osd-verify 2>/dev/null || true

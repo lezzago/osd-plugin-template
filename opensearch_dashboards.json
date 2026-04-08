@@ -1,0 +1,10 @@
+{
+  "id": "myPlugin",
+  "version": "1.0.0",
+  "opensearchDashboardsVersion": "3.6.0",
+  "configPath": ["my_plugin"],
+  "server": true,
+  "ui": true,
+  "requiredPlugins": ["navigation"],
+  "optionalPlugins": []
+}

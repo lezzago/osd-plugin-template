@@ -1,0 +1,10 @@
+build/
+dist/
+target/
+coverage/
+node_modules/
+standalone/dist/
+standalone/node_modules/
+package-lock.json
+yarn.lock
+*.zip

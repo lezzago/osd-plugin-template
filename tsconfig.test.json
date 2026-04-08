@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["jest", "node", "@testing-library/jest-dom"],
+    "outDir": "./dist-test",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "declaration": false
+  },
+  "include": [
+    "core/**/*.ts",
+    "server/**/*.ts",
+    "public/**/*.ts",
+    "public/**/*.tsx",
+    "common/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "target", "standalone/dist"]
+}

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: OpenSearch Forum
+    url: https://forum.opensearch.org/
+    about: Ask questions and discuss on the OpenSearch forum
