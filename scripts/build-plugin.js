@@ -24,6 +24,7 @@ const path = require('path');
 const PLUGIN_NAME = 'myPlugin';
 const ROOT_DIR = path.resolve(__dirname, '..');
 const BUILD_DIR = path.join(ROOT_DIR, 'build');
+const STUBS_DIR = path.join(ROOT_DIR, 'stubs');
 const STAGING_DIR = path.join(BUILD_DIR, 'staging', 'opensearch-dashboards', PLUGIN_NAME);
 
 function run(cmd, opts = {}) {
@@ -65,19 +66,63 @@ if (!fs.existsSync(path.join(ROOT_DIR, 'node_modules'))) {
   console.log('[2/5] Dependencies already installed, skipping.');
 }
 
-// 3. Copy server-side source (OSD compiles TypeScript at load time)
-console.log('[3/5] Copying server-side source...');
+// 3. Compile server-side TypeScript to CommonJS.
+// OSD in Docker expects compiled .js files (unlike the monorepo dev mode
+// which compiles TypeScript on the fly). We compile server/, core/, and common/
+// into the staging directory using a temporary tsconfig.
+console.log('[3/5] Compiling server-side TypeScript...');
+
+const serverTsConfig = path.join(BUILD_DIR, 'tsconfig.server-build.json');
+fs.writeFileSync(
+  serverTsConfig,
+  JSON.stringify(
+    {
+      compilerOptions: {
+        target: 'ES2020',
+        module: 'commonjs',
+        lib: ['ES2020'],
+        types: ['node'],
+        outDir: STAGING_DIR,
+        rootDir: ROOT_DIR,
+        strict: false,
+        esModuleInterop: true,
+        resolveJsonModule: true,
+        skipLibCheck: true,
+        moduleResolution: 'node',
+        declaration: false,
+        sourceMap: false,
+        baseUrl: ROOT_DIR,
+        paths: {
+          '../../../../src/core/server': [path.join(STUBS_DIR, 'src/core/server')],
+          '../../../src/core/server': [path.join(STUBS_DIR, 'src/core/server')],
+          '@osd/config-schema': [path.join(STUBS_DIR, '@osd/config-schema')],
+        },
+      },
+      include: [
+        path.join(ROOT_DIR, 'core/**/*.ts'),
+        path.join(ROOT_DIR, 'server/**/*.ts'),
+        path.join(ROOT_DIR, 'common/**/*.ts'),
+      ],
+      exclude: [
+        path.join(ROOT_DIR, '**/__tests__/**'),
+        path.join(ROOT_DIR, '**/*.test.ts'),
+      ],
+    },
+    null,
+    2
+  )
+);
+
+run(`npx tsc --project "${serverTsConfig}"`);
 const excludes = ['__tests__', '__mocks__', '.test.', 'node_modules'];
-copyDir(path.join(ROOT_DIR, 'server'), path.join(STAGING_DIR, 'server'), excludes);
-copyDir(path.join(ROOT_DIR, 'core'), path.join(STAGING_DIR, 'core'), excludes);
-copyDir(path.join(ROOT_DIR, 'common'), path.join(STAGING_DIR, 'common'), excludes);
 
 // 4. Build client bundle
 console.log('[4/5] Building client bundle with webpack...');
 run('npx webpack --config webpack.osd.config.js');
 
-const bundleSrc = path.join(BUILD_DIR, 'public', `${PLUGIN_NAME}.plugin.js`);
-const bundleDest = path.join(STAGING_DIR, 'build', 'public');
+// Webpack outputs to build/myPlugin/target/public/ — copy the bundle into staging
+const bundleSrc = path.join(BUILD_DIR, PLUGIN_NAME, 'target', 'public', `${PLUGIN_NAME}.plugin.js`);
+const bundleDest = path.join(STAGING_DIR, 'target', 'public');
 fs.mkdirSync(bundleDest, { recursive: true });
 fs.copyFileSync(bundleSrc, path.join(bundleDest, `${PLUGIN_NAME}.plugin.js`));
 
@@ -90,10 +135,19 @@ fs.copyFileSync(
   path.join(ROOT_DIR, 'opensearch_dashboards.json'),
   path.join(STAGING_DIR, 'opensearch_dashboards.json')
 );
-fs.copyFileSync(
-  path.join(ROOT_DIR, 'package.json'),
-  path.join(STAGING_DIR, 'package.json')
-);
+
+// Write a minimal package.json for the installed plugin.
+// The `main` field must point to the client bundle so OSD can load it.
+const osdPkg = {
+  name: PLUGIN_NAME,
+  version: '1.0.0',
+  main: `target/public/${PLUGIN_NAME}.plugin.js`,
+  opensearchDashboards: {
+    version: '3.6.0',
+    templateVersion: '1.0.0',
+  },
+};
+fs.writeFileSync(path.join(STAGING_DIR, 'package.json'), JSON.stringify(osdPkg, null, 2));
 
 // Create zip
 const stagingRoot = path.join(BUILD_DIR, 'staging');
